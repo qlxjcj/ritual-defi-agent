@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DeFi Strategy Agent · Ritual</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0f; color: #e0e0e0; font: 14px/1.6 'SF Mono', 'Fira Code', monospace; min-height: 100vh; }
+    .container { max-width: 800px; margin: 0 auto; padding: 40px 20px; }
+    h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+    .sub { color: #666; font-size: 12px; margin-bottom: 24px; }
+    .card { background: #12121a; border: 1px solid #1e1e2e; border-radius: 8px; padding: 20px; margin-bottom: 16px; }
+    .card h2 { font-size: 13px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 12px; }
+    .row { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-bottom: 1px solid #1a1a24; }
+    .row:last-child { border-bottom: 0; }
+    .label { color: #666; font-size: 12px; }
+    .value { color: #fff; font-size: 13px; }
+    .value.mono { font-family: monospace; font-size: 12px; color: #8be9fd; word-break: break-all; }
+    .status-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+    .status-badge.on { background: #50fa7b; box-shadow: 0 0 6px #50fa7b; }
+    .status-badge.off { background: #ff5555; }
+    button { font: 13px monospace; padding: 10px 20px; border: 1px solid #2a2a3a; border-radius: 6px; cursor: pointer; transition: all .15s; }
+    button:hover:not(:disabled) { border-color: #8be9fd; color: #8be9fd; }
+    button:disabled { opacity: .3; cursor: not-allowed; }
+    .btn-primary { background: #1a1a2e; color: #8be9fd; border-color: #8be9fd; }
+    .btn-primary:hover:not(:disabled) { background: #8be9fd; color: #0a0a0f; }
+    .btn-group { display: flex; gap: 10px; }
+    .report-box { background: #0a0a0f; border: 1px solid #1e1e2e; border-radius: 6px; padding: 16px; font-size: 13px; line-height: 1.8; white-space: pre-wrap; max-height: 500px; overflow-y: auto; color: #c0c0c0; }
+    .tx-link { color: #8be9fd; font-size: 11px; word-break: break-all; }
+    #connectBtn { width: 100%; padding: 14px; font-size: 14px; }
+    .hidden { display: none !important; }
+    .loading { animation: pulse 1s infinite; }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+    @media (max-width: 600px) { .container { padding: 20px 12px; } .btn-group { flex-direction: column; } }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>DeFi Strategy Agent</h1>
+  <p class="sub">Ritual Chain · HTTP + LLM Precompiles</p>
+
+  <div class="card" id="connectCard">
+    <button id="connectBtn" onclick="connect()">Connect Wallet</button>
+  </div>
+
+  <div id="dashboard" class="hidden">
+    <div class="card">
+      <h2>Status</h2>
+      <div class="row"><span class="label">Wallet</span><span class="value mono" id="walletAddr">-</span></div>
+      <div class="row"><span class="label">Cycles</span><span class="value" id="cycleCount">-</span></div>
+      <div class="row"><span class="label">Last Fetch</span><span class="value" id="lastFetch">-</span></div>
+      <div class="row"><span class="label">Last Analyze</span><span class="value" id="lastAnalyze">-</span></div>
+      <div class="row"><span class="label">LLM Model</span><span class="value" id="llmModel">-</span></div>
+    </div>
+
+    <div class="card">
+      <h2>Actions</h2>
+      <div class="btn-group">
+        <button class="btn-primary" id="fetchBtn" onclick="doFetch()">Fetch Data</button>
+        <button class="btn-primary" id="analyzeBtn" onclick="doAnalyze()">Analyze</button>
+        <button onclick="refresh()">Refresh</button>
+      </div>
+      <div style="margin-top:10px;font-size:11px;color:#555">
+        Step 1: Fetch HTTP data → Step 2: LLM analysis (one precompile per tx)
+      </div>
+    </div>
+
+    <div class="card" id="reportCard">
+      <h2>Latest Report</h2>
+      <div id="reportLoading" class="loading" style="color:#666">Loading...</div>
+      <div class="report-box hidden" id="reportBox"></div>
+    </div>
+
+    <div class="card">
+      <h2>Contract</h2>
+      <div class="row">
+        <span class="label">Address</span>
+        <a class="value mono" style="color:#8be9fd;font-size:11px" target="_blank" id="contractLink">-</a>
+      </div>
+      <div class="row"><span class="label">Raw Data</span><span class="value" id="rawDataLen">-</span></div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.5/dist/ethers.umd.min.js"></script>
+<script>
+const CONTRACT = "0xaACC65267fA0cae0160397a43F400D42F23e1a3E";
+const RPC = "https://rpc.ritualfoundation.org";
+const CHAIN_ID = 1979;
+const EXPLORER = "https://explorer.ritualfoundation.org";
+
+const ABI = [{type:"function",name:"cycleCount",outputs:[{type:"uint256"}],stateMutability:"view"},{type:"function",name:"lastFetchedAt",outputs:[{type:"uint256"}],stateMutability:"view"},{type:"function",name:"lastAnalyzedAt",outputs:[{type:"uint256"}],stateMutability:"view"},{type:"function",name:"lastAnalysis",outputs:[{type:"string"}],stateMutability:"view"},{type:"function",name:"lastRawData",outputs:[{type:"string"}],stateMutability:"view"},{type:"function",name:"llmModel",outputs:[{type:"string"}],stateMutability:"view"},{type:"function",name:"owner",outputs:[{type:"address"}],stateMutability:"view"},{type:"function",name:"fetch",outputs:[],stateMutability:"nonpayable"},{type:"function",name:"analyze",outputs:[],stateMutability:"nonpayable"}];
+
+let signer, agent, account;
+
+async function connect() {
+  if (!window.ethereum) return alert("Please install MetaMask or Rabby");
+  const p = new ethers.BrowserProvider(window.ethereum);
+  await p.send("wallet_switchEthereumChain", [{ chainId: "0x" + CHAIN_ID.toString(16) }]).catch(async () => {
+    await p.send("wallet_addEthereumChain", [{
+      chainId: "0x" + CHAIN_ID.toString(16),
+      chainName: "Ritual Testnet",
+      rpcUrls: [RPC],
+      nativeCurrency: { name: "RITUAL", symbol: "RITUAL", decimals: 18 },
+      blockExplorerUrls: [EXPLORER]
+    }]);
+  });
+  await p.send("eth_requestAccounts", []);
+  signer = await p.getSigner();
+  account = await signer.getAddress();
+  agent = new ethers.Contract(CONTRACT, ABI, signer);
+  document.getElementById("connectCard").classList.add("hidden");
+  document.getElementById("dashboard").classList.remove("hidden");
+  refresh();
+}
+
+function fmtTime(ts) { return ts > 0n ? new Date(Number(ts) * 1000).toLocaleString("zh-CN") : "-"; }
+function short(a) { return a ? a.slice(0,6)+"..."+a.slice(-4) : "-"; }
+
+async function refresh() {
+  if (!agent) return;
+  try { document.getElementById("walletAddr").textContent = short(account); } catch {}
+  try { document.getElementById("cycleCount").textContent = (await agent.cycleCount()).toString(); } catch {}
+  try { document.getElementById("lastFetch").textContent = fmtTime(await agent.lastFetchedAt()); } catch {}
+  try { document.getElementById("lastAnalyze").textContent = fmtTime(await agent.lastAnalyzedAt()); } catch {}
+  try { document.getElementById("llmModel").textContent = await agent.llmModel(); } catch {}
+  try { document.getElementById("contractLink").href = EXPLORER + "/address/" + CONTRACT; } catch {}
+  try { document.getElementById("contractLink").textContent = short(CONTRACT); } catch {}
+  try {
+    const raw = await agent.lastRawData();
+    document.getElementById("rawDataLen").textContent = raw ? (raw.length + " chars") : "-";
+  } catch {}
+  try {
+    const r = await agent.lastAnalysis();
+    document.getElementById("reportLoading").classList.add("hidden");
+    const box = document.getElementById("reportBox");
+    if (r) { box.textContent = r; box.classList.remove("hidden"); }
+    else { box.classList.add("hidden"); }
+  } catch {}
+}
+
+async function doFetch() {
+  if (!signer) return;
+  const btn = document.getElementById("fetchBtn");
+  btn.disabled = true; btn.textContent = "Fetching...";
+  try {
+    const tx = await agent.fetch({ gasLimit: 30000000 });
+    btn.textContent = "Confirming...";
+    await tx.wait();
+    btn.textContent = "Done";
+  } catch(e) { btn.textContent = "Failed"; console.error(e); }
+  setTimeout(() => { btn.disabled = false; btn.textContent = "Fetch Data"; refresh(); }, 2000);
+}
+
+async function doAnalyze() {
+  if (!signer) return;
+  const btn = document.getElementById("analyzeBtn");
+  btn.disabled = true; btn.textContent = "Analyzing...";
+  try {
+    const tx = await agent.analyze({ gasLimit: 30000000 });
+    btn.textContent = "Confirming...";
+    await tx.wait();
+    btn.textContent = "Done";
+  } catch(e) { btn.textContent = "Failed"; console.error(e); }
+  setTimeout(() => { btn.disabled = false; btn.textContent = "Analyze"; refresh(); }, 2000);
+}
+
+(async () => {
+  if (window.ethereum && window.ethereum.selectedAddress) {
+    try {
+      const p = new ethers.BrowserProvider(window.ethereum);
+      signer = await p.getSigner();
+      account = await signer.getAddress();
+      agent = new ethers.Contract(CONTRACT, ABI, signer);
+      document.getElementById("connectCard").classList.add("hidden");
+      document.getElementById("dashboard").classList.remove("hidden");
+      refresh();
+    } catch {}
+  }
+})();
+</script>
+</body>
+</html>
